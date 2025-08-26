@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kbot
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/mexxo-dvp/kbot
+    targetRevision: develop
+    path: helm/kbot
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
