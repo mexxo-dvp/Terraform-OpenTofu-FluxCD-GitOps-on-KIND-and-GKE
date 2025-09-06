@@ -1,0 +1,40 @@
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: sentinel-bot
+  namespace: apps
+spec:
+  interval: 1m
+  timeout: 10m
+
+  install:
+    createNamespace: true
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+
+  upgrade:
+    remediation:
+      retries: 3
+      remediateLastFailure: true
+
+  chart:
+    spec:
+      chart: ./helm/sentinel-bot
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+        namespace: flux-system
+      interval: 1m
+
+  values:
+    image:
+      repository: ghcr.io/mexxo-dvp/sentinel-bot
+      pullPolicy: IfNotPresent
+    # turn on this for private repo
+    # imagePullSecrets:
+    #   - name: ghcr-cred
+
+    teleToken:
+      secretName: sentinel-bot
+      secretKey: token
