@@ -7,8 +7,8 @@ module "gke" {
   source = "github.com/mexxo-dvp/tf-google-gke-cluster"
 
   GOOGLE_PROJECT  = var.project
-  GOOGLE_REGION   = var.location # region, напр. europe-west1
-  GOOGLE_LOCATION = var.location # дублюємо — у модулі є обидва інпути
+  GOOGLE_REGION   = var.location # region, eg europe-west1
+  GOOGLE_LOCATION = var.location # duplicate — the module has both inputs
 
   GKE_CLUSTER_NAME = var.cluster_name
   GKE_POOL_NAME    = var.pool_name
@@ -35,7 +35,7 @@ module "gke_auth_self" {
   location     = var.location
   cluster_name = var.cluster_name
 
-  # гарантуємо, що кластер вже створений
+  # we guarantee that the cluster has already been created
   depends_on = [module.gke]
 }
 
@@ -45,16 +45,14 @@ resource "local_file" "kubeconfig" {
   file_permission = "0600"
 }
 
-# 4) Flux bootstrap у GKE
+# 4) Flux bootstrap in GKE
 module "flux_bootstrap_gke" {
   source            = "github.com/den-vasyliev/tf-fluxcd-flux-bootstrap"
   github_repository = "${var.github_owner}/${var.github_repo}"
   github_token      = var.github_token
   private_key       = module.tls_private_key.private_key_pem
 
-  # підсовуємо наш kubeconfig-файл
+  # we insert our kubeconfig file
   config_path = local_file.kubeconfig.filename
   target_path = var.target_path
 }
-
-# (опційно) зручно віддати шлях до kubeconfig

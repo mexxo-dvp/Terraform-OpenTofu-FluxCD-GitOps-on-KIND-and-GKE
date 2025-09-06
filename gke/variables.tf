@@ -4,7 +4,7 @@ variable "project" {
 
 variable "location" {
   type    = string
-  default = "europe-west1" # region; якщо хочеш зону, див. примітку нижче
+  default = "europe-west1" # region;
 }
 
 variable "cluster_name" {
