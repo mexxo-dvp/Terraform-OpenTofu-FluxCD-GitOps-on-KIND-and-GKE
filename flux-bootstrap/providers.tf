@@ -2,10 +2,10 @@ provider "github" {
   owner = var.github_owner
 }
 
-# v1.6: вкладені блоки як map-аргументи, без merge()
+# v1.6: nested blocks as map arguments, no merge()
 provider "flux" {
   kubernetes = {
-    # важливо: розкриваємо ~
+    # important: revealing ~
     config_path    = pathexpand(var.kubeconfig_path)
     config_context = var.kubeconfig_context
   }

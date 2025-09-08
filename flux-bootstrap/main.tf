@@ -1,4 +1,4 @@
-# --- Ключ для доступу до приватного GitOps-репо по SSH (deploy key) ---
+# --- Key for accessing private GitOps repo via SSH (deploy key) ---
 resource "tls_private_key" "flux" {
   algorithm = "ED25519"
 }
@@ -10,21 +10,21 @@ resource "github_repository_deploy_key" "flux" {
   read_only  = false
 }
 
-# --- Bootstrap Flux у кластері + коміт маніфестів у GitOps-репо ---
+# --- Bootstrap Flux in cluster + commit manifests to GitOps repo ---
 resource "flux_bootstrap_git" "this" {
-  # де в репозиторії зберігаються маніфести кластера
+# where in the repository the cluster manifests are stored
   path = var.gitops_path
 
-  # куди інсталювати Flux у кластері
+# where to install Flux in the cluster
   namespace            = "flux-system"
   keep_namespace       = false
   network_policy       = true
   watch_all_namespaces = true
 
-  # версія компонентів Flux, що підніметься в кластері та закомітиться у репо
+# version of Flux components that will be pushed to the cluster and committed to the repo
   version = "v2.6.4"
 
-  # компоненти Flux
+# Flux components
   components = [
     "source-controller",
     "kustomize-controller",
@@ -37,7 +37,7 @@ resource "flux_bootstrap_git" "this" {
   log_level      = "info"
   cluster_domain = "cluster.local"
 
-  # Git-маніфести з Flux (зробить коміт у твій GitOps-репо через SSH)
+# Git manifests with Flux (will commit to your GitOps repo via SSH)
   delete_git_manifests = true
   embedded_manifests   = false
 
