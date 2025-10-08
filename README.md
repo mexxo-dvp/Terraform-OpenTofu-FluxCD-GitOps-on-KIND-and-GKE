@@ -1,4 +1,297 @@
-# Terraform / OpenTofu + FluxCD GitOps на KIND та GKE — Повний звіт про виконання
+[EN](#en) | [UA](#ua)
+
+<a id="en"></a>
+
+# Terraform / OpenTofu + FluxCD GitOps on KIND & GKE
+
+## Goal
+
+* Local development on **KIND** → prod‑like deployment on **GKE**.
+* Automated **CI/CD (GitHub Actions → GHCR)** for container and Helm chart.
+* **FluxCD** for GitOps sync and auto‑deploy of the application (**sentinel-bot / kbot**) via **OCI Helm chart**.
+
+---
+
+## Prerequisites
+
+* Tools: `git`, `gh` (GitHub CLI), `docker` (+ buildx), `kubectl`, `helm`, `terraform` or `opentofu`, `kind`, `yq`, `oras` (opt.).
+* GitHub: create a **Personal Access Token (classic)** with scopes:
+
+  * `repo`
+  * `write:packages` (includes `read:packages`)
+* Add the token to the repository as secret **`GHCR_PAT`**: `Settings → Secrets and variables → Actions → New repository secret`.
+* Accounts / image names:
+
+  * Container: `ghcr.io/<owner>/sentinel-bot`
+  * Helm charts (OCI): `oci://ghcr.io/<owner>/charts`
+
+---
+
+## Repository Structure
+
+```text
+.
+├── Dockerfile
+├── LICENSE
+├── Makefile
+├── README.md
+├── RELEASE.md
+├── _dist
+│   └── sentinel-bot-0.1.2.tgz
+├── cmd
+│   ├── root.go
+│   ├── sentinel-bot.go
+│   └── version.go
+├── go.mod
+├── go.sum
+├── helm
+│   └── sentinel-bot
+│       ├── Chart.yaml
+│       ├── templates
+│       │   ├── NOTES.txt
+│       │   ├── _helpers.tpl
+│       │   ├── deployment.yaml
+│       │   ├── secret.yaml
+│       │   └── service.yaml
+│       └── values.yaml
+├── infra
+│   ├── argocd-app-sentinel.yaml
+│   ├── flux-bootstrap
+│   │   ├── README.md
+│   │   ├── main.tf
+│   │   ├── providers.tf
+│   │   ├── terraform.tfstate
+│   │   ├── terraform.tfstate.backup
+│   │   ├── terraform.tfvars
+│   │   ├── variables.tf
+│   │   └── versions.tf
+│   ├── gke
+│   │   ├── kustomization.yaml
+│   │   ├── main.tf
+│   │   ├── outputs.tf
+│   │   ├── providers.tf
+│   │   ├── terraform.tfstate
+│   │   ├── terraform.tfstate.backup
+│   │   ├── variables.tf
+│   │   └── versions.tf
+│   └── kind
+│       ├── kind-cluster-config
+│       ├── main.tf
+│       ├── outputs.tf
+│       ├── providers.tf
+│       ├── terraform.tfstate
+│       ├── terraform.tfstate.backup
+│       ├── variables.tf
+│       └── versions.tf
+├── main.go
+└── sentinel-bot
+```
+
+---
+
+## Infrastructure (KIND / GKE)
+
+### Local (KIND via Terraform/OpenTofu)
+
+```bash
+cd infra/kind
+tofu init -upgrade
+tofu apply -auto-approve -var="kubeconfig_path=$(pwd)/kubeconfig"
+export KUBECONFIG="$(tofu output -raw kubeconfig_path)"
+kubectl get nodes
+kubectl get ns
+```
+
+To destroy if needed: `kind delete cluster --name dev`
+
+### On GKE
+
+* Cluster is created via module [`tf-google-gke-cluster`](https://github.com/mexxo-dvp/tf-google-gke-cluster).
+* Type: **zonal GKE cluster** (lower SSD‑quota requirements).
+* Terraform manages:
+
+  * GKE cluster + node pool
+  * TLS keys (`tf-hashicorp-tls-keys` module)
+  * GitHub deploy key
+  * Flux bootstrap (`tf-fluxcd-flux-bootstrap`)
+
+---
+
+## FluxCD Bootstrap
+
+* Namespace: `flux-system`.
+* Expected deployments: `source-controller`, `helm-controller`, `kustomize-controller`, `notification-controller`.
+
+```bash
+kubectl -n flux-system get ns
+kubectl -n flux-system get deploy
+kubectl -n flux-system get gitrepositories,helmrepositories,helmreleases
+```
+
+* Provider `fluxcd/flux` reads kubeconfig from env. Before `terraform apply`:
+
+```bash
+export KUBECONFIG=infra/kind/kubeconfig   # or ~/.kube/config for GKE
+```
+
+---
+
+## 5. CI/CD (GitHub Actions → GHCR)
+
+File: `.github/workflows/cicd.yaml`
+
+### Triggers
+
+* push to `main`
+* tags `v*.*.*`
+* manual `workflow_dispatch`
+
+### What it does
+
+1. Generates tags: `${base_tag}-${sha_short}-${OS}-${ARCH}`, `main`, etc.
+2. Logs in to GHCR via `GHCR_PAT` or `GITHUB_TOKEN`.
+3. Builds and pushes Docker image to `ghcr.io/<owner>/sentinel-bot`.
+4. Updates `values.yaml` and `Chart.yaml` using `yq` (branch pushes only).
+5. On tag `v*.*.*`: packages Helm chart and pushes to `oci://ghcr.io/<owner>/charts`.
+
+Manual run example:
+
+```bash
+gh workflow run "sentinel-bot CI/CD" -r main
+gh run list --workflow "cicd.yaml" --limit 5
+```
+
+### Common CI issues
+
+* `Unrecognized named-value: 'secrets'` → must use `${{ ... }}`.
+* `403 Forbidden` on push → PAT lacks `write:packages` or SSO not authorized.
+* Commit bumps on PR/tag → restricted to branch push only.
+
+---
+
+## Deploying the App via Flux
+
+### A) GitRepository (dev environment)
+
+* Flux `GitRepository` → HelmChart from git → `HelmRelease` deploys charts.
+
+### B) HelmRepository (OCI)
+
+* Flux `HelmRepository`: `oci://ghcr.io/<owner>/charts`
+* `HelmRelease`: `chart: sentinel-bot`, `version: 0.1.*`
+
+Expected: `HelmRelease` `Ready=True`, app deployed.
+
+```bash
+kubectl -n apps wait --for=condition=Ready hr/sentinel-bot --timeout=5m
+kubectl -n apps rollout status deploy/sentinel-bot
+```
+
+---
+
+## Release Flow (tags → chart publish → Flux upgrades)
+
+1. Bump version in `Chart.yaml` (if CI doesn’t).
+2. Create tag and release:
+
+   ```bash
+   git tag v0.1.4
+   git push origin refs/tags/v0.1.4
+   gh release create v0.1.4 --target main --generate-notes -t "sentinel-bot v0.1.4"
+   ```
+3. CI packages and pushes the chart to GHCR.
+4. Flux with `version: 0.1.*` pulls the new version.
+
+Verification:
+
+```bash
+helm pull oci://ghcr.io/<owner>/charts/sentinel-bot --version 0.1.4
+kubectl -n apps get deploy sentinel-bot -o=jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+```
+
+---
+
+## Makefile Shortcuts
+
+* `make print` — show owner/image/tags/helm repo.
+* `make image` — buildx build+push to GHCR.
+* `make helm-bump` — sync `values` & `Chart` locally.
+* `make helm-release` — `helm package` + `helm push`.
+
+---
+
+## Common Problems & Fixes
+
+* **403 on GHCR push** — token lacks `write:packages` or SSO not authorized.
+* **Flux HelmChart won’t switch to HelmRepository** — check `HelmChart` & `HelmRelease`, reconcile.
+* **`invalid configuration: no configuration has been provided`** — missed `export KUBECONFIG`.
+* **KIND kubeconfig path duplication** — always pass `-var="kubeconfig_path=$(pwd)/kubeconfig"`.
+* **`gh api` 403** — use `GH_TOKEN=<PAT>` with `read:packages`.
+
+---
+
+## Validation Checklist
+
+* [ ] KIND cluster running; `kubectl get nodes` OK.
+* [ ] Flux controllers in `flux-system` namespace.
+* [ ] GitRepository/HelmRepository in `Ready` state.
+* [ ] `HelmRelease` → `Ready`.
+* [ ] CI on push to `main` built image to GHCR.
+* [ ] Release tag produced chart in GHCR; `helm pull` works.
+* [ ] Flux pulled new chart (semver).
+
+---
+
+## One‑liners for Status
+
+```bash
+# CI runs (latest 5)
+gh run list --workflow "cicd.yaml" --limit 5
+
+# Current image in the cluster
+kubectl -n apps get deploy sentinel-bot -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+
+# HelmChart (source kind/name)
+kubectl -n flux-system get helmchart -o wide
+
+# Force reconcile
+kubectl -n flux-system annotate helmrepository/mexxo-charts reconcile.fluxcd.io/requestedAt="$(date +%s)" --overwrite
+kubectl -n apps annotate hr/sentinel-bot reconcile.fluxcd.io/requestedAt="$(date +%s)" --overwrite
+
+# GHCR: list chart tags
+oras repo tags ghcr.io/<owner>/charts/sentinel-bot | sort -V | tail -n 20
+```
+
+---
+
+## Cleanup (destroy)
+
+```bash
+# Flux/GitOps
+tofu -chdir=infra/flux destroy -auto-approve
+
+# Local cluster
+tofu -chdir=infra/kind destroy -auto-approve || true
+kind delete cluster || true
+```
+
+---
+
+## Conclusion
+
+* ✅ Infrastructure (KIND/GKE) provisioned with Terraform/OpenTofu.
+* ✅ FluxCD bootstrapped and connected to GitHub.
+* ✅ CI/CD builds container and chart automatically and pushes to GHCR.
+* ✅ Flux pulls new versions and deploys the app.
+
+Time: **20 hours** end‑to‑end (KIND, GKE, Flux via Terraform, CI/CD, GHCR, release pipeline, docs).
+Price: fixed **$350** (as agreed).
+
+---
+
+<a id="ua"></a>
+
+# Terraform / OpenTofu + FluxCD GitOps на KIND та GKE
 
 ## Мета
 
@@ -270,6 +563,7 @@ tofu -chdir=infra/flux destroy -auto-approve
 tofu -chdir=infra/kind destroy -auto-approve || true
 kind delete cluster || true
 ```
+
 ---
 
 ## Висновок
@@ -279,5 +573,5 @@ kind delete cluster || true
 * ✅ CI/CD автоматично збирає контейнер і чарт, пушить у GHCR.
 * ✅ Flux автопідтягує нові версії та розгортає апку.
 
-Час: 20 годин від початку до кінця (завантаження KIND,GKE + Flux через Terraform, CI/CD, GHCR, релізна лінія, документація).
-Ціна: фіксована $350 (за домовленістю).
+Час: **20 годин** від початку до кінця (завантаження KIND,GKE + Flux через Terraform, CI/CD, GHCR, релізна лінія, документація).
+Ціна: фіксована **$350** (за домовленістю).
